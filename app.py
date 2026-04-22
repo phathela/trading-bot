@@ -69,6 +69,52 @@ def webhook():
         logger.error(f"Error processing webhook: {str(e)}")
         return jsonify({'error': str(e)}), 500
 
+@app.route('/webhook/3commas', methods=['POST'])
+def webhook_3commas():
+    """Accept 3Commas format webhooks and convert to bot format"""
+    try:
+        data = request.get_json()
+        logger.info(f"3Commas webhook received: {data}")
+
+        action = data.get('action', '').lower()
+
+        # Convert 3Commas action to buy/sell signal
+        if action == 'enter_long':
+            signal = 'Buy'
+        elif action == 'enter_short':
+            signal = 'Sell'
+        elif action == 'close_long':
+            signal = 'Sell'
+        elif action == 'close_short':
+            signal = 'Buy'
+        else:
+            logger.warning(f"Unknown 3Commas action: {action}")
+            return jsonify({'error': f'Unknown action: {action}'}), 400
+
+        logger.info(f"3Commas action converted: {action} → {signal}")
+
+        # Set both indicators to same signal (since 3Commas is single source)
+        indicator_signals['indicator_a'] = signal
+        indicator_signals['indicator_b'] = signal
+        indicator_signals['last_update'] = datetime.now().isoformat()
+
+        logger.info(f"Both indicators set to: {signal}")
+
+        # Process the aligned signals
+        result = process_trade_signals()
+
+        return jsonify({
+            'status': 'received',
+            'action': action,
+            'signal': signal,
+            'trade_action': result,
+            'indicator_signals': indicator_signals
+        }), 200
+
+    except Exception as e:
+        logger.error(f"Error processing 3Commas webhook: {str(e)}")
+        return jsonify({'error': str(e)}), 500
+
 def process_trade_signals():
     """Process signals from both indicators and execute trades"""
     signal_a = indicator_signals['indicator_a']
