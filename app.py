@@ -1,11 +1,8 @@
 import os
 import logging
 from flask import Flask, request, jsonify
-from dotenv import load_dotenv
 from bybit_trader import BybitTrader
 from datetime import datetime
-
-load_dotenv()
 
 app = Flask(__name__)
 logger = logging.getLogger(__name__)
