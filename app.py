@@ -19,7 +19,7 @@ API_KEY = os.getenv('BYBIT_API_KEY', '')
 API_SECRET = os.getenv('BYBIT_API_SECRET', '')
 WEBHOOK_KEY = os.getenv('WEBHOOK_KEY', 'default_webhook_key')
 SYMBOL = os.getenv('SYMBOL', 'BTCUSDT')
-TESTNET = os.getenv('TESTNET', 'True').lower() == 'true'
+TESTNET = os.getenv('BYBIT_TESTNET', 'True').lower() == 'true'
 
 trader = BybitTrader(api_key=API_KEY, api_secret=API_SECRET, testnet=TESTNET)
 
