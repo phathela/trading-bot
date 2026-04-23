@@ -108,8 +108,21 @@ class BybitTrader:
                 logger.error("Invalid position size")
                 return False
 
-            qty = round(qty, 4)
-            logger.info(f"Opening {side} position for {qty} {symbol}")
+            # Round to 3 decimal places to match Bybit's BTCUSDT contract precision
+            qty = round(qty, 3)
+
+            # Validate minimum notional value (Bybit requires >= 10 USDT)
+            current_price = self.get_current_price(symbol)
+            if current_price:
+                notional_value = qty * current_price
+                logger.info(f"Order validation — qty: {qty} {symbol}, price: {current_price}, notional: {notional_value:.4f} USDT")
+                if notional_value < 10:
+                    logger.error(f"Notional value {notional_value:.4f} USDT is below Bybit's minimum of 10 USDT — order aborted")
+                    return False
+            else:
+                logger.warning("Could not fetch current price for notional value check — proceeding anyway")
+
+            logger.info(f"Sending order to Bybit — side: {side}, qty: {qty} (exact value being submitted)")
 
             response = self.session.place_order(
                 category="linear",
