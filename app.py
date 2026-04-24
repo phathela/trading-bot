@@ -27,7 +27,8 @@ indicator_signals = {
     'indicator_a': None,
     'indicator_b': None,
     'last_update': None,
-    'trade_active': False
+    'trade_active': False,
+    'position_side': None  # 'Long' or 'Short' when trade_active is True
 }
 
 @app.route('/health', methods=['GET'])
@@ -126,7 +127,15 @@ def process_3commas_webhook(indicator):
         return jsonify({'error': str(e)}), 500
 
 def process_trade_signals():
-    """Process signals from both indicators and execute trades"""
+    """Process signals from both indicators and execute trades.
+
+    Scenarios handled:
+      1. Both BUY  + no position open   → Open LONG
+      2. Both SELL + no position open   → Open SHORT
+      3. Both BUY  + SHORT position open → Close SHORT, open LONG
+      4. Both SELL + LONG  position open → Close LONG,  open SHORT
+      5. Indicators misaligned           → Do nothing
+    """
     signal_a = indicator_signals['indicator_a']
     signal_b = indicator_signals['indicator_b']
 
@@ -135,33 +144,66 @@ def process_trade_signals():
         return None
 
     if signal_a != signal_b:
-        logger.info(f"Indicators not aligned: A={signal_a}, B={signal_b}")
+        logger.info(f"Indicators not aligned: A={signal_a}, B={signal_b} — holding current position")
         return None
 
-    current_action = None
+    # Both indicators are aligned from here on
+    both_buy  = (signal_a == 'Buy')
+    both_sell = (signal_a == 'Sell')
 
-    if signal_a == signal_b == 'Buy' and not indicator_signals['trade_active']:
-        logger.info("Both indicators signal BUY - Opening position")
-        current_action = 'BUY'
+    trade_active   = indicator_signals['trade_active']
+    position_side  = indicator_signals['position_side']  # 'Long' or 'Short'
+
+    # ── Scenario 1: Both BUY, no open position → Open LONG ──────────────────
+    if both_buy and not trade_active:
+        logger.info("Both indicators signal BUY — Opening LONG position")
         if trader.open_position(symbol=SYMBOL, side='Buy'):
-            indicator_signals['trade_active'] = True
-        return current_action
+            indicator_signals['trade_active']  = True
+            indicator_signals['position_side'] = 'Long'
+            return 'OPEN_LONG'
+        return 'OPEN_LONG_FAILED'
 
-    elif signal_a == signal_b == 'Sell' and indicator_signals['trade_active']:
-        logger.info("Both indicators signal SELL - Closing position")
-        current_action = 'SELL'
-        if trader.close_position(symbol=SYMBOL):
-            indicator_signals['trade_active'] = False
-        return current_action
+    # ── Scenario 2: Both SELL, no open position → Open SHORT ────────────────
+    if both_sell and not trade_active:
+        logger.info("Both indicators signal SELL — Opening SHORT position")
+        if trader.open_position(symbol=SYMBOL, side='Sell'):
+            indicator_signals['trade_active']  = True
+            indicator_signals['position_side'] = 'Short'
+            return 'OPEN_SHORT'
+        return 'OPEN_SHORT_FAILED'
 
-    elif signal_a == 'Sell' and indicator_signals['trade_active'] and (signal_a != signal_b):
-        logger.info("One indicator changed to SELL - Closing position immediately")
-        current_action = 'EMERGENCY_SELL'
-        if trader.close_position(symbol=SYMBOL):
-            indicator_signals['trade_active'] = False
-        return current_action
+    # ── Scenario 3: Both BUY, SHORT position open → Close SHORT, open LONG ──
+    if both_buy and trade_active and position_side == 'Short':
+        logger.info("Both indicators signal BUY — Closing SHORT and opening LONG")
+        closed = trader.close_position(symbol=SYMBOL)
+        if closed:
+            indicator_signals['trade_active']  = False
+            indicator_signals['position_side'] = None
+        if trader.open_position(symbol=SYMBOL, side='Buy'):
+            indicator_signals['trade_active']  = True
+            indicator_signals['position_side'] = 'Long'
+            return 'CLOSE_SHORT_OPEN_LONG'
+        return 'CLOSE_SHORT_OPEN_LONG_FAILED'
 
-    return current_action
+    # ── Scenario 4: Both SELL, LONG position open → Close LONG, open SHORT ──
+    if both_sell and trade_active and position_side == 'Long':
+        logger.info("Both indicators signal SELL — Closing LONG and opening SHORT")
+        closed = trader.close_position(symbol=SYMBOL)
+        if closed:
+            indicator_signals['trade_active']  = False
+            indicator_signals['position_side'] = None
+        if trader.open_position(symbol=SYMBOL, side='Sell'):
+            indicator_signals['trade_active']  = True
+            indicator_signals['position_side'] = 'Short'
+            return 'CLOSE_LONG_OPEN_SHORT'
+        return 'CLOSE_LONG_OPEN_SHORT_FAILED'
+
+    # Already in the correct position direction — nothing to do
+    logger.info(
+        f"Both indicators signal {'BUY' if both_buy else 'SELL'} "
+        f"and position is already {position_side} — no action needed"
+    )
+    return None
 
 @app.route('/status', methods=['GET'])
 def status():
@@ -208,7 +250,8 @@ def manual_open_trade():
         symbol = data.get('symbol', SYMBOL)
 
         if trader.open_position(symbol=symbol, side=side):
-            indicator_signals['trade_active'] = True
+            indicator_signals['trade_active']  = True
+            indicator_signals['position_side'] = 'Long' if side == 'Buy' else 'Short'
             return jsonify({'status': 'success', 'action': 'position_opened'}), 200
         else:
             return jsonify({'status': 'failed', 'action': 'position_open_failed'}), 400
@@ -225,7 +268,8 @@ def manual_close_trade():
         symbol = data.get('symbol', SYMBOL)
 
         if trader.close_position(symbol=symbol):
-            indicator_signals['trade_active'] = False
+            indicator_signals['trade_active']  = False
+            indicator_signals['position_side'] = None
             return jsonify({'status': 'success', 'action': 'position_closed'}), 200
         else:
             return jsonify({'status': 'failed', 'action': 'position_close_failed'}), 400
