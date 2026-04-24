@@ -27,7 +27,8 @@ indicator_signals = {
     'indicator_a': None,
     'indicator_b': None,
     'last_update': None,
-    'trade_active': False
+    'trade_active': False,
+    'position_side': None  # 'long', 'short', or None
 }
 
 @app.route('/health', methods=['GET'])
@@ -130,42 +131,79 @@ def process_3commas_webhook(indicator):
         return jsonify({'error': str(e)}), 500
 
 def process_trade_signals():
-    """Process signals from both indicators and execute trades"""
+    """Process signals from both indicators and execute trades.
+
+    Opening a position requires BOTH indicators to agree on direction.
+    Closing a position happens immediately when EITHER indicator signals
+    the opposite direction — no confirmation from the second indicator needed.
+    """
     signal_a = indicator_signals['indicator_a']
     signal_b = indicator_signals['indicator_b']
+    trade_active = indicator_signals['trade_active']
+    position_side = indicator_signals['position_side']
 
-    if signal_a is None or signal_b is None:
-        logger.info("Waiting for both indicators to signal...")
+    logger.info(f"Processing signals — A={signal_a}, B={signal_b}, active={trade_active}, side={position_side}")
+
+    # ── No position open ────────────────────────────────────────────────────
+    if not trade_active:
+        if signal_a is None or signal_b is None:
+            logger.info("Waiting for both indicators to signal before opening a position")
+            return None
+
+        if signal_a == 'Buy' and signal_b == 'Buy':
+            logger.info("Both indicators signal BUY — opening LONG position")
+            if trader.open_position(symbol=SYMBOL, side='Buy'):
+                indicator_signals['trade_active'] = True
+                indicator_signals['position_side'] = 'long'
+                return 'OPEN_LONG'
+            return 'OPEN_LONG_FAILED'
+
+        if signal_a == 'Sell' and signal_b == 'Sell':
+            logger.info("Both indicators signal SELL — opening SHORT position")
+            if trader.open_position(symbol=SYMBOL, side='Sell'):
+                indicator_signals['trade_active'] = True
+                indicator_signals['position_side'] = 'short'
+                return 'OPEN_SHORT'
+            return 'OPEN_SHORT_FAILED'
+
+        logger.info(f"Indicators not aligned (A={signal_a}, B={signal_b}) — no position opened")
         return None
 
-    if signal_a != signal_b:
-        logger.info(f"Indicators not aligned: A={signal_a}, B={signal_b}")
-        return None
+    # ── LONG position is open ───────────────────────────────────────────────
+    if position_side == 'long':
+        if signal_a == 'Sell' or signal_b == 'Sell':
+            logger.info(
+                f"LONG position: indicator change detected (A={signal_a}, B={signal_b}) "
+                "— closing LONG immediately"
+            )
+            if trader.close_position(symbol=SYMBOL):
+                indicator_signals['trade_active'] = False
+                indicator_signals['position_side'] = None
+                return 'CLOSE_LONG'
+            return 'CLOSE_LONG_FAILED'
 
-    current_action = None
+        logger.info("LONG position: both indicators still BUY — holding")
+        return 'HOLD_LONG'
 
-    if signal_a == signal_b == 'Buy' and not indicator_signals['trade_active']:
-        logger.info("Both indicators signal BUY - Opening position")
-        current_action = 'BUY'
-        if trader.open_position(symbol=SYMBOL, side='Buy'):
-            indicator_signals['trade_active'] = True
-        return current_action
+    # ── SHORT position is open ──────────────────────────────────────────────
+    if position_side == 'short':
+        if signal_a == 'Buy' or signal_b == 'Buy':
+            logger.info(
+                f"SHORT position: indicator change detected (A={signal_a}, B={signal_b}) "
+                "— closing SHORT immediately"
+            )
+            if trader.close_position(symbol=SYMBOL):
+                indicator_signals['trade_active'] = False
+                indicator_signals['position_side'] = None
+                return 'CLOSE_SHORT'
+            return 'CLOSE_SHORT_FAILED'
 
-    elif signal_a == signal_b == 'Sell' and indicator_signals['trade_active']:
-        logger.info("Both indicators signal SELL - Closing position")
-        current_action = 'SELL'
-        if trader.close_position(symbol=SYMBOL):
-            indicator_signals['trade_active'] = False
-        return current_action
+        logger.info("SHORT position: both indicators still SELL — holding")
+        return 'HOLD_SHORT'
 
-    elif signal_a == 'Sell' and indicator_signals['trade_active'] and (signal_a != signal_b):
-        logger.info("One indicator changed to SELL - Closing position immediately")
-        current_action = 'EMERGENCY_SELL'
-        if trader.close_position(symbol=SYMBOL):
-            indicator_signals['trade_active'] = False
-        return current_action
-
-    return current_action
+    # ── Unexpected state ────────────────────────────────────────────────────
+    logger.warning(f"Unexpected state — trade_active={trade_active}, position_side={position_side}")
+    return None
 
 @app.route('/status', methods=['GET'])
 def status():
